@@ -453,11 +453,12 @@ async def login(request: LoginRequest, raw_request: Request):
         # Capture ORM attributes locally before closing the session to prevent DetachedInstanceError
         user_id = str(user.id)
         user_role = user.role
+        user_tenant_uuid = user.tenant_id
+        tenant_id = str(user_tenant_uuid) if user_tenant_uuid else ""
         
         await session.commit()
 
     await clear_failed_logins(request.email)
-    tenant_id = str(user.tenant_id) if user.tenant_id else ""
 
     # SECURITY: Check tenant status — block login for suspended/cancelled tenants.
     # This runs AFTER password verification to avoid leaking tenant state
@@ -465,7 +466,7 @@ async def login(request: LoginRequest, raw_request: Request):
     if tenant_id:
         async with async_session() as session:
             tenant_result = await session.execute(
-                select(Tenant.status).where(Tenant.id == tenant_id)
+                select(Tenant.status).where(Tenant.id == user_tenant_uuid)
             )
             tenant_status = tenant_result.scalar_one_or_none()
         if tenant_status and tenant_status not in ("trial", "active"):
