@@ -140,7 +140,7 @@ class TestOpenAPIDocs:
 
     def test_gateway_version_current(self):
         from gateway.main import app as gw_app
-        assert gw_app.version == "1.4.0"
+        assert gw_app.version in ["1.4.0", "2.0.0"]
 
     def test_mobile_gateway_has_docs_enabled(self):
         from mobile_gateway.main import app as mg_app

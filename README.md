@@ -140,5 +140,13 @@ python -m pytest tests/test_mobile_gateway_isolation.py -v
 
 ---
 
+## 📖 API Documentation (OpenAPI & Swagger / ReDoc)
+
+Both API gateways have interactive OpenAPI documentation enabled:
+* **Central API Gateway**: Accessible at `http://localhost:8000/docs` (Swagger UI) or `http://localhost:8000/redoc` (ReDoc).
+* **Mobile Gateway**: Accessible at `http://localhost:8005/docs` (Swagger UI) or `http://localhost:8005/redoc` (ReDoc).
+
+---
+
 ## 📜 License
 This project is developed as a graduation project. All rights reserved.

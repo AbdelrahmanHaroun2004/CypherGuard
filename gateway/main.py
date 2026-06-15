@@ -449,6 +449,11 @@ async def login(request: LoginRequest, raw_request: Request):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         user.last_login = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        # Capture ORM attributes locally before closing the session to prevent DetachedInstanceError
+        user_id = str(user.id)
+        user_role = user.role
+        
         await session.commit()
 
     await clear_failed_logins(request.email)
@@ -474,19 +479,19 @@ async def login(request: LoginRequest, raw_request: Request):
                 detail=f"Your organization's account is {tenant_status}. Contact support.",
             )
 
-    token = create_access_token(str(user.id), user.role, tenant_id=tenant_id)
-    refresh = create_refresh_token(str(user.id), user.role, tenant_id=tenant_id)
+    token = create_access_token(user_id, user_role, tenant_id=tenant_id)
+    refresh = create_refresh_token(user_id, user_role, tenant_id=tenant_id)
     AUTH_EVENTS.labels(event="login_success").inc()
     await write_audit_log(
         action="auth.login", actor=request.email,
-        resource_type="session", resource_id=str(user.id),
+        resource_type="session", resource_id=user_id,
         ip_address=raw_request.client.host if raw_request.client else None,
         tenant_id=tenant_id,
     )
 
     return TokenResponse(
         access_token=token, refresh_token=refresh,
-        expires_in=JWT_EXPIRY_SECONDS, role=user.role,
+        expires_in=JWT_EXPIRY_SECONDS, role=user_role,
     )
 
 

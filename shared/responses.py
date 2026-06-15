@@ -64,6 +64,7 @@ def paginated_response(
         content={
             "success": True,
             "data": data,
+            "items": data,  # Backward compatibility for legacy tools/scripts
             "meta": meta,
         },
     )
@@ -139,12 +140,13 @@ def decision_to_dict(log) -> dict:
 
 def user_to_dict(user) -> dict:
     """Convert a User ORM object to a safe API dict (no password hash)."""
+    tenant_id = getattr(user, "tenant_id", None)
     return {
         "id": str(user.id),
         "email": user.email,
         "full_name": getattr(user, "full_name", None),
         "role": user.role,
-        "tenant_id": str(user.tenant_id) if user.tenant_id else None,
+        "tenant_id": str(tenant_id) if tenant_id else None,
         "is_active": user.is_active,
         "is_email_verified": getattr(user, "is_email_verified", True),
         "created_at": user.created_at.isoformat() if user.created_at else None,

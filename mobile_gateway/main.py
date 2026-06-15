@@ -218,6 +218,11 @@ app = FastAPI(
     ),
     docs_url="/docs", redoc_url="/redoc",
     lifespan=lifespan,
+    openapi_tags=[
+        {"name": "Auth", "description": "Authentication and session management"},
+        {"name": "Decisions", "description": "Analyst decisions and mitigation actions"},
+        {"name": "Devices", "description": "FCM push registration"},
+    ],
 )
 
 # Middleware: Tenant Identity Rule (Block manual overrides)
@@ -299,17 +304,23 @@ async def login(data: AuthRequest, request: Request):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         user.last_login = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        # Capture ORM attributes locally before closing the session to prevent DetachedInstanceError
+        user_id = str(user.id)
+        user_role = user.role
+        user_tenant_uuid = user.tenant_id
+        tenant_id = str(user_tenant_uuid) if user_tenant_uuid else ""
+        
         await session.commit()
 
     await clear_failed_logins(data.email)
-    tenant_id = str(user.tenant_id) if user.tenant_id else ""
 
     # SECURITY: Check tenant status — block login for suspended/cancelled tenants.
     # Runs AFTER password verification to prevent leaking tenant status to attackers.
     if tenant_id:
         async with async_session() as session:
             tenant_result = await session.execute(
-                select(Tenant.status).where(Tenant.id == user.tenant_id)
+                select(Tenant.status).where(Tenant.id == user_tenant_uuid)
             )
             tenant_status = tenant_result.scalar_one_or_none()
         if tenant_status and tenant_status not in ("trial", "active"):
@@ -319,19 +330,19 @@ async def login(data: AuthRequest, request: Request):
                 detail=f"Tenant account is {tenant_status}. Contact support."
             )
 
-    token = create_access_token(str(user.id), user.role, tenant_id=tenant_id, expires_in=MOBILE_TOKEN_EXPIRY)
-    refresh = create_refresh_token(str(user.id), user.role, tenant_id=tenant_id)
+    token = create_access_token(user_id, user_role, tenant_id=tenant_id, expires_in=MOBILE_TOKEN_EXPIRY)
+    refresh = create_refresh_token(user_id, user_role, tenant_id=tenant_id)
     AUTH_EVENTS.labels(event="mobile_login_success").inc()
     await write_audit_log(
         action="auth.mobile_login", actor=data.email,
-        resource_type="session", resource_id=str(user.id),
+        resource_type="session", resource_id=user_id,
         ip_address=request.client.host if request.client else None,
         tenant_id=tenant_id,
     )
 
     return success_response(data={
         "access_token": token, "refresh_token": refresh,
-        "token_type": "bearer", "expires_in": MOBILE_TOKEN_EXPIRY, "role": user.role,
+        "token_type": "bearer", "expires_in": MOBILE_TOKEN_EXPIRY, "role": user_role,
     })
 
 
@@ -370,11 +381,15 @@ async def mobile_logout(token: TokenPayload = Depends(verify_jwt)):
 async def get_alerts(
     cursor: str | None = Query(default=None, description="ISO timestamp cursor"),
     per_page: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
     severity: str | None = Query(default=None, pattern="^(low|medium|high|critical)$"),
     status: str | None = Query(default=None, pattern="^(new|investigating|resolved|false_positive)$"),
     tenant_id: str = Depends(require_active_tenant),
 ):
     """Get alerts from PostgreSQL with cursor-based pagination and tenant isolation."""
+    if limit is not None:
+        per_page = limit
+
     async with tenant_session(tenant_id) as session:
         query = select(Alert).order_by(desc(Alert.created_at), desc(Alert.id))
 
@@ -501,10 +516,14 @@ async def change_password(
 async def get_blocked_ips(
     cursor: str | None = Query(default=None),
     per_page: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
     active_only: bool = Query(default=True),
     tenant_id: str = Depends(require_active_tenant),
 ):
     """Get blocked IPs from PostgreSQL with metadata, pagination, and tenant isolation."""
+    if limit is not None:
+        per_page = limit
+
     async with tenant_session(tenant_id) as session:
         query = select(BlockedIP).order_by(desc(BlockedIP.created_at))
         if active_only:
@@ -617,9 +636,13 @@ async def unblock_ip(
 async def get_decisions(
     cursor: str | None = Query(default=None),
     per_page: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
     tenant_id: str = Depends(require_active_tenant),
 ):
     """Get decision history from PostgreSQL with cursor pagination and tenant isolation."""
+    if limit is not None:
+        per_page = limit
+
     async with tenant_session(tenant_id) as session:
         query = select(DecisionLog).order_by(desc(DecisionLog.created_at))
         if cursor:
@@ -789,9 +812,13 @@ def notification_to_dict(n: Notification) -> dict:
 async def get_notifications(
     cursor: str | None = Query(default=None, description="ISO timestamp cursor"),
     per_page: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
     tenant_id: str = Depends(require_active_tenant)
 ):
     """Get in-app notifications for the active tenant."""
+    if limit is not None:
+        per_page = limit
+
     async with tenant_session(tenant_id) as session:
         query = select(Notification).order_by(desc(Notification.created_at))
 
@@ -891,6 +918,20 @@ async def legacy_decision(
     tenant_id: str = Depends(require_active_tenant)
 ):
     return await handle_decision(req, payload, tenant_id)
+
+
+@v1_router.put("/alerts/{alert_id}/status")
+@v1_router.patch("/alerts/{alert_id}/status")
+@app.put("/v1/mobile/alerts/{alert_id}/status")
+@app.patch("/v1/mobile/alerts/{alert_id}/status")
+@app.put("/mobile/alerts/{alert_id}/status")
+@app.patch("/mobile/alerts/{alert_id}/status")
+async def legacy_update_alert_status(
+    alert_id: str, update: AlertStatusUpdate,
+    auth: TokenPayload = Depends(require_role("admin", "analyst")),
+    tenant_id: str = Depends(require_active_tenant),
+):
+    return await update_alert(alert_id, update, auth, tenant_id)
 
 
 # ===================================================================
